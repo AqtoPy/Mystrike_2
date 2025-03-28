@@ -6,6 +6,36 @@ extends Node3D
 var players = {}
 var current_game_mode = null
 
+var dev_cheats = {
+    "godmode": false,
+    "infinite_ammo": false,
+    "super_speed": false
+}
+
+func _input(event):
+    if PlayerData.is_developer():
+        if event.is_action_pressed("dev_godmode"):
+            _toggle_godmode()
+        if event.is_action_pressed("dev_spawn_weapon"):
+            _spawn_random_weapon()
+
+func _toggle_godmode():
+    dev_cheats.godmode = !dev_cheats.godmode
+    var msg = "Режим бога %s" % ["активирован" if dev_cheats.godmode else "отключен"]
+    GameEvents.emit_system_message(msg, Color.GREEN)
+    GameEvents.dev_cheat_activated.emit("godmode")
+
+func _spawn_random_weapon():
+    var weapons = [
+        preload("res://weapons/rifle.tscn"),
+        preload("res://weapons/shotgun.tscn")
+    ]
+    var weapon = weapons.pick_random().instantiate()
+    weapon.position = $Player.global_position
+    add_child(weapon)
+    GameEvents.dev_spawn_object.emit("weapon")
+
+
 func _ready():
     NetworkManager.peer_connected.connect(_on_player_connected)
     NetworkManager.peer_disconnected.connect(_on_player_disconnected)
