@@ -1,50 +1,68 @@
 extends Control
 
-@onready var server_list = $VBoxContainer/ScrollContainer/ServerList
+@onready var server_list = %ServerList
+@onready var refresh_timer = %RefreshTimer
+
+var servers = []
 
 func _ready():
-    refresh_server_list()
+    _setup_list()
+    _refresh_servers()
+    refresh_timer.timeout.connect(_refresh_servers)
 
-func refresh_server_list():
-    # Очищаем список
-    for child in server_list.get_children():
-        child.queue_free()
-    
-    # Загружаем серверы (пример)
-    var servers = ServerManager.get_servers()
-    
-    for server in servers:
-        var panel = PanelContainer.new()
-        var hbox = HBoxContainer.new()
-        
-        var name_label = Label.new()
-        name_label.text = server.name
-        hbox.add_child(name_label)
-        
-        var mode_label = Label.new()
-        mode_label.text = server.mode
-        hbox.add_child(mode_label)
-        
-        var players_label = Label.new()
-        players_label.text = "%d/%d" % [server.players.size(), server.max_players]
-        hbox.add_child(players_label)
-        
-        var join_button = Button.new()
-        join_button.text = "Присоединиться"
-        join_button.connect("pressed", Callable(self, "_on_join_pressed").bind(server))
-        hbox.add_child(join_button)
-        
-        panel.add_child(hbox)
-        server_list.add_child(panel)
+func _setup_list():
+    server_list.set_column_title(0, "Сервер")
+    server_list.set_column_title(1, "Режим")
+    server_list.set_column_title(2, "Игроки")
+    server_list.set_column_title(3, "Пинг")
+    server_list.set_column_expand(0, true)
+    server_list.set_column_expand(1, false)
+    server_list.set_column_expand(2, false)
+    server_list.set_column_expand(3, false)
+    server_list.set_column_custom_minimum_width(1, 150)
+    server_list.set_column_custom_minimum_width(2, 80)
+    server_list.set_column_custom_minimum_width(3, 80)
 
-func _on_join_pressed(server):
-    # Подключаемся к серверу
-    var peer = ENetMultiplayerPeer.new()
-    peer.create_client("127.0.0.1", 4242) # Используйте реальный IP сервера
-    multiplayer.multiplayer_peer = peer
-    
-    # Переходим в лобби
-    get_tree().change_scene_to_file("res://scenes/server_lobby.tscn")
+func _refresh_servers():
+    NetworkManager.request_server_list()
+    servers.clear()
+    server_list.clear()
 
-func _on_refresh_button_pressed():
-    refresh_server_list()
+    # Заглушка для тестирования
+    _add_test_server()
+    
+    # В реальном проекте:
+    # for server in NetworkManager.get_available_servers():
+    #     _add_server_to_list(server)
+
+func _add_test_server():
+    var test_server = {
+        "name": "Тестовый сервер",
+        "mode": "Zombie Mode",
+        "players": "3/8",
+        "ping": "45"
+    }
+    _add_server_to_list(test_server)
+
+func _add_server_to_list(server: Dictionary):
+    var line = server_list.get_item_count()
+    server_list.add_item(server.name)
+    server_list.set_item_text(line, 1, server.mode)
+    server_list.set_item_text(line, 2, server.players)
+    server_list.set_item_text(line, 3, server.ping + " ms")
+    server_list.set_item_metadata(line, server)
+
+func _on_join_pressed():
+    var selected = server_list.get_selected_items()
+    if selected.size() > 0:
+        var server = server_list.get_item_metadata(selected[0])
+        NetworkManager.join_server(server.ip, server.port)
+
+func _on_refresh_pressed():
+    _refresh_servers()
+
+func _on_server_selected(index: int):
+    %JoinButton.disabled = false
+
+func _on_back_pressed():
+    get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
