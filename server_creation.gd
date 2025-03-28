@@ -1,34 +1,95 @@
 extends Control
 
-@onready var name_input = $Panel/VBoxContainer/NameInput
-@onready var mode_option = $Panel/VBoxContainer/ModeOption
-@onready var players_slider = $Panel/VBoxContainer/PlayersSlider
-@onready var password_input = $Panel/VBoxContainer/PasswordInput
-@onready var create_btn = $Panel/VBoxContainer/CreateBtn
+@onready var server_name_input = %ServerNameInput
+@onready var map_option = %MapOption
+@onready var mode_option = %ModeOption
+@onready var max_players_slider = %MaxPlayersSlider
+@onready var status_label = %StatusLabel
 
 var available_modes = []
+var available_maps = []
 
 func _ready():
-    load_game_modes()
-    create_btn.connect("pressed", _on_create_pressed)
+    _load_resources()
+    _populate_ui()
+    _connect_signals()
 
-func load_game_modes():
-    var dir = DirAccess.open("res://scripts/game_modes/")
+func _load_resources():
+    # Загрузка доступных режимов из папки gamemodes
+    var dir = DirAccess.open("res://gamemodes/")
     if dir:
         dir.list_dir_begin()
-        var file_name = dir.get_next()
-        while file_name != "":
-            if file_name.ends_with(".gd") and file_name != "base_mode.gd":
-                var mode = load("res://scripts/game_modes/" + file_name).new()
-                mode_option.add_item(mode.mode_name)
-                available_modes.append(mode)
-            file_name = dir.get_next()
+        var file = dir.get_next()
+        while file != "":
+            if file.ends_with(".gd"):
+                var mode = load("res://gamemodes/" + file).new()
+                available_modes.append({
+                    "name": mode.mode_name,
+                    "id": file.get_basename(),
+                    "description": mode.description
+                })
+            file = dir.get_next()
+
+    # Загрузка доступных карт из папки maps
+    var maps_dir = DirAccess.open("res://maps/")
+    if maps_dir:
+        maps_dir.list_dir_begin()
+        var map_file = maps_dir.get_next()
+        while map_file != "":
+            if map_file.ends_with(".tscn"):
+                available_maps.append({
+                    "name": map_file.get_basename().replace("_", " ").capitalize(),
+                    "path": "res://maps/" + map_file
+                })
+            map_file = maps_dir.get_next()
+
+func _populate_ui():
+    # Заполнение выбора режимов
+    for mode in available_modes:
+        mode_option.add_item(mode.name)
+    
+    # Заполнение выбора карт
+    for map in available_maps:
+        map_option.add_item(map.name)
+    
+    # Настройка слайдера игроков
+    max_players_slider.min_value = 2
+    max_players_slider.max_value = 16
+    max_players_slider.value = 8
+
+func _connect_signals():
+    %CreateButton.pressed.connect(_on_create_pressed)
+    %BackButton.pressed.connect(_on_back_pressed)
+    %RefreshMapsButton.pressed.connect(_load_resources)
 
 func _on_create_pressed():
-    var server_name = name_input.text
-    var mode = available_modes[mode_option.selected]
-    var max_players = players_slider.value
-    var password = password_input.text
+    var config = {
+        "server_name": server_name_input.text.strip_edges(),
+        "map": available_maps[map_option.selected]["path"],
+        "mode": available_modes[mode_option.selected]["id"],
+        "max_players": int(max_players_slider.value),
+        "players": []
+    }
     
-    if ServerManager.create_server(server_name, mode, max_players, password):
-        get_tree().change_scene_to_file("res://scenes/game/game_world.tscn")
+    if _validate_config(config):
+        NetworkManager.create_server(config)
+        get_tree().change_scene_to_file("res://scenes/lobby.tscn")
+
+func _validate_config(config: Dictionary) -> bool:
+    if config.server_name.length() < 3:
+        _show_error("Название сервера должно быть не менее 3 символов")
+        return false
+    
+    if config.max_players < 2:
+        _show_error("Минимальное количество игроков - 2")
+        return false
+    
+    return true
+
+func _show_error(message: String):
+    status_label.text = message
+    status_label.add_theme_color_override("font_color", Color.RED)
+    %ErrorAnimation.play("shake")
+
+func _on_back_pressed():
+    get_tree().change_scene_to_file("res://scenes/main_menu.tscn")
