@@ -1,106 +1,96 @@
-class_name ZombieMode extends GameModeAPI
+class_name ZombieMode
+extends BaseGameMode
 
+# Константы
+const ZOMBIE_TEAM = "zombies"
+const SURVIVOR_TEAM = "survivors"
 const MATCH_DURATION = 300.0 # 5 минут
-const ZOMBIE_HEALTH = 150.0
-const ZOMBIE_SPEED = 2.0
-const SURVIVOR_HEALTH = 100.0
+const INITIAL_INFECTION_DELAY = 10.0
 
+# Переменные
 var match_timer: Timer
-var initial_zombie_set = false
+var infection_timer: Timer
+var infected_count = 0
 
 func _init():
+    # Метаданные режима
     mode_name = "Zombie Apocalypse"
     author = "Horror Studios"
-    version = "1.3"
-    description = "Зомби против выживших. Выживи любой ценой!"
+    version = "2.1"
+    description = "Выжившие против зомби. Последний выживший побеждает!"
 
-func register_teams() -> Dictionary:
-    return {
-        "Выжившие": {
-            "color": Color("#00FF00"),
-            "spawn_group": "survivor_spawns",
-            "score": 0
-        },
-        "Зомби": {
-            "color": Color("#FF0000"),
-            "spawn_group": "zombie_spawns",
-            "score": 0
-        }
-    }
-
-func _on_game_start():
+func initialize_mode():
+    # Инициализация таймеров
     match_timer = Timer.new()
     match_timer.wait_time = MATCH_DURATION
     match_timer.timeout.connect(_on_match_end)
     add_child(match_timer)
+    
+    infection_timer = Timer.new()
+    infection_timer.wait_time = INITIAL_INFECTION_DELAY
+    infection_timer.timeout.connect(_select_initial_zombie)
+    add_child(infection_timer)
+
+func start_game():
+    # Старт игры
+    broadcast_message("Бегите! Заражение начнётся через %d секунд!" % INITIAL_INFECTION_DELAY, Color.ORANGE)
+    infection_timer.start()
     match_timer.start()
     
-    broadcast("Спасайтесь! Заражение начинается!", Color.RED)
-    _select_initial_zombie()
+    # Настройка игроков
+    for player in get_players():
+        _setup_survivor(player)
 
-func _on_player_join(player: Player):
-    if not initial_zombie_set:
-        _apply_survivor_modifiers(player)
-    else:
-        _apply_zombie_modifiers(player)
-
-func _on_player_death(player: Player, killer: Player):
-    if killer and killer.team == "Зомби" and player.team == "Выжившие":
-        _infect_player(player)
-    respawn_player(player, 5.0)
+func _setup_survivor(player: Node):
+    if player.has_method("set_team"):
+        player.set_team(SURVIVOR_TEAM)
+        player.set_health(150.0 if PlayerData.is_vip(player.get_id()) else 100.0)
+        player.set_speed(1.5 if PlayerData.is_developer(player.get_id()) else 1.0)
 
 func _select_initial_zombie():
-    var players = get_players()
-    if players.is_empty():
-        return
+    var candidates = []
+    for player in get_players():
+        if player.get_team() == SURVIVOR_TEAM:
+            candidates.append(player)
     
-    var zombie = players.pick_random()
-    _infect_player(zombie)
-    initial_zombie_set = true
+    if candidates.size() > 0:
+        var zombie = candidates[randi() % candidates.size()]
+        _infect_player(zombie)
+        broadcast_message("%s стал первым зомби!" % zombie.get_name(), Color.RED)
 
-func _infect_player(player: Player):
-    player.team = "Зомби"
-    player.set_health(ZOMBIE_HEALTH)
-    player.speed_multiplier = ZOMBIE_SPEED
-    broadcast("%s был заражен!" % player.name, Color.RED)
-    
-    # VIP/Developer бонусы
-    if PlayerData.is_vip(player.id) or PlayerData.is_developer(player.id):
-        player.set_health(ZOMBIE_HEALTH * 1.5)
-        player.speed_multiplier = ZOMBIE_SPEED * 1.5
+func _infect_player(player: Node):
+    if player.has_method("set_team"):
+        player.set_team(ZOMBIE_TEAM)
+        player.set_health(200.0)
+        player.set_speed(1.8)
+        infected_count += 1
+        
+        # VIP/Dev бонусы для зомби
+        if PlayerData.is_vip(player.get_id()):
+            player.set_health(250.0)
+        if PlayerData.is_developer(player.get_id()):
+            player.set_speed(2.5)
+        
+        broadcast_message("%s был заражён!" % player.get_name(), Color.RED_RED)
 
-func _apply_survivor_modifiers(player: Player):
-    player.team = "Выжившие"
-    player.set_health(SURVIVOR_HEALTH)
-    
-    # VIP/Developer бонусы
-    if PlayerData.is_vip(player.id) or PlayerData.is_developer(player.id):
-        player.set_health(SURVIVOR_HEALTH * 1.5)
-        player.speed_multiplier = 2.0
-
-func _apply_zombie_modifiers(player: Player):
-    player.team = "Зомби"
-    player.set_health(ZOMBIE_HEALTH)
-    player.speed_multiplier = ZOMBIE_SPEED
+func _on_player_death(player: Node, killer: Node):
+    if player.get_team() == SURVIVOR_TEAM and killer.get_team() == ZOMBIE_TEAM:
+        _infect_player(player)
+    else:
+        respawn_player(player, 5.0)
 
 func _on_match_end():
-    var survivors = get_players().filter(
-        func(p): return p.team == "Выжившие" and p.is_alive
-    )
+    var survivors = 0
+    for player in get_players():
+        if player.get_team() == SURVIVOR_TEAM:
+            survivors += 1
     
-    if survivors.size() > 0:
-        broadcast("Выжившие победили!", Color.GREEN)
+    if survivors > 0:
+        broadcast_message("Выжившие победили! Осталось %d человек" % survivors, Color.GREEN)
     else:
-        broadcast("Зомби захватили мир!", Color.RED)
+        broadcast_message("Зомби победили! Все заражены", Color.RED)
     
     end_game()
 
-func create_hud():
-    return preload("res://gamemodes/zombie_hud.tscn").instantiate()
-
-func _process(delta):
-    if match_timer:
-        var time_left = match_timer.time_left
-        var minutes = floor(time_left / 60)
-        var seconds = floor(fmod(time_left, 60))
-        broadcast("Осталось времени: %02d:%02d" % [minutes, seconds], Color.WHITE, true)
+func create_hud() -> Control:
+    return preload("res://ui/zombie_hud.tscn").instantiate()
