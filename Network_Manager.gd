@@ -1,169 +1,127 @@
 class_name NetworkManager
 extends Node
 
-## Autoload singleton для управления сетевым взаимодействием
+# Настройки
+const DEFAULT_PORT = 9080
+const MAX_PLAYERS = 16
+const BROADCAST_INTERVAL = 1.0
+const BROADCAST_PORT = 9090
 
 # Сигналы
 signal server_created(success: bool)
-signal connection_success()
+signal server_joined()
 signal connection_failed()
-signal player_connected(player_id: int)
-signal player_disconnected(player_id: int)
-signal player_data_received(player_id: int, data: Dictionary)
+signal player_list_updated()
+signal team_selected(team: String)
 
-# Конфигурация сети
-const DEFAULT_PORT = 9080
-const MAX_PLAYERS = 16
-const SERVER_IP = "127.0.0.1"
-
-# Данные игроков
+# Данные
 var players = {}
-var local_player_id = 0
-
-var peer: ENetMultiplayerPeer = null
+var local_player_info = {}
+var available_servers = []
+var broadcast_timer = Timer.new()
+var udp_listener = PacketPeerUDP.new()
 
 func _ready():
-    multiplayer.peer_connected.connect(_on_peer_connected)
-    multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-    multiplayer.connected_to_server.connect(_on_connected_to_server)
-    multiplayer.connection_failed.connect(_on_connection_failed)
-    multiplayer.server_disconnected.connect(_on_server_disconnected)
+    # Настройка таймера для локального вещания
+    broadcast_timer.wait_time = BROADCAST_INTERVAL
+    broadcast_timer.timeout.connect(_broadcast_server_presence)
+    add_child(broadcast_timer)
+    
+    # Настройка UDP listener
+    udp_listener.bind(BROADCAST_PORT)
 
-func create_server(port: int = DEFAULT_PORT) -> void:
-    peer = ENetMultiplayerPeer.new()
-    var error = peer.create_server(port, MAX_PLAYERS)
+func create_server(config: Dictionary):
+    var peer = ENetMultiplayerPeer.new()
+    var error = peer.create_server(DEFAULT_PORT, MAX_PLAYERS)
     
     if error != OK:
-        push_error("Failed to create server: ", error)
         server_created.emit(false)
         return
     
     multiplayer.multiplayer_peer = peer
-    local_player_id = 1
-    _register_local_player()
+    _setup_server(config)
     server_created.emit(true)
+    broadcast_timer.start()
 
-func join_server(ip: String = SERVER_IP, port: int = DEFAULT_PORT) -> void:
-    peer = ENetMultiplayerPeer.new()
-    var error = peer.create_client(ip, port)
+func join_server(ip: String = "127.0.0.1"):
+    var peer = ENetMultiplayerPeer.new()
+    var error = peer.create_client(ip, DEFAULT_PORT)
     
     if error != OK:
-        push_error("Failed to connect to server: ", error)
         connection_failed.emit()
         return
     
     multiplayer.multiplayer_peer = peer
 
-func disconnect_from_server() -> void:
-    if peer:
-        peer.close()
-        peer = null
-    players.clear()
-
-func get_player_list() -> Dictionary:
-    return players.duplicate()
-
-func _register_local_player():
-    var player_data = {
-        "name": PlayerData.get_player_name(),
-        "vip": PlayerData.is_vip_active(),
-        "dev": PlayerData.is_developer(),
-        "position": Vector3.ZERO,
-        "rotation": Vector3.ZERO
+func _setup_server(config: Dictionary):
+    players[1] = {
+        "name": config.server_name,
+        "team": "",
+        "ip": "127.0.0.1",
+        "port": DEFAULT_PORT,
+        "max_players": config.max_players,
+        "map": config.map,
+        "mode": config.mode
     }
-    players[local_player_id] = player_data
-    _update_player_data(local_player_id, player_data)
-
-@rpc("any_peer", "reliable")
-func _update_player_data(player_id: int, data: Dictionary):
-    players[player_id] = data
-    player_data_received.emit(player_id, data)
-
-func _on_peer_connected(player_id: int):
-    print("Player connected: ", player_id)
-    player_connected.emit(player_id)
     
+    multiplayer.peer_connected.connect(_on_peer_connected)
+    multiplayer.peer_disconnected.connect(_on_peer_disconnected)
+
+func _broadcast_server_presence():
     if multiplayer.is_server():
-        # Отправляем новому игроку данные всех существующих игроков
-        for id in players:
-            rpc_id(player_id, "_update_player_data", id, players[id])
+        var udp = PacketPeerUDP.new()
+        udp.set_dest_address("224.0.0.1", BROADCAST_PORT)
+        var data = JSON.stringify(players[1])
+        udp.put_packet(data.to_utf8_buffer())
+        udp.close()
+
+func _on_peer_connected(id: int):
+    players[id] = {"name": "Player %d" % id, "team": ""}
+    player_list_updated.emit()
+    
+    # Отправляем новые данные всем клиентам
+    update_player_data()
+
+func _on_peer_disconnected(id: int):
+    players.erase(id)
+    player_list_updated.emit()
+    update_player_data()
+
+@rpc("any_peer", "reliable")
+func select_team(team: String):
+    var id = multiplayer.get_remote_sender_id()
+    if players.has(id):
+        players[id].team = team
+        team_selected.emit(team)
+        player_list_updated.emit()
         
-        # Запрашиваем данные нового игрока
-        rpc_id(player_id, "_request_player_data")
+        # Спавн игрока после выбора команды
+        GameEvents.spawn_player_requested.emit(id, team)
 
-@rpc("any_peer", "reliable")
-func _request_player_data():
-    if multiplayer.is_server():
-        return
-    _register_local_player()
-    _update_player_data.rpc_id(1, local_player_id, players[local_player_id])
+func update_player_data():
+    rpc("_receive_player_data", players)
 
-@rpc("any_peer", "reliable")
-func _on_player_data_update(player_id: int, data: Dictionary):
-    players[player_id] = data
+@rpc("reliable")
+func _receive_player_data(data: Dictionary):
+    players = data
+    player_list_updated.emit()
 
-func _on_peer_disconnected(player_id: int):
-    print("Player disconnected: ", player_id)
-    players.erase(player_id)
-    player_disconnected.emit(player_id)
+func _process(delta):
+    if udp_listener.get_available_packet_count() > 0:
+        var packet = udp_listener.get_packet()
+        var server_info = JSON.parse_string(packet.get_string_from_utf8())
+        if server_info and not _server_exists(server_info.ip):
+            available_servers.append(server_info)
 
-func _on_connected_to_server():
-    print("Successfully connected to server")
-    local_player_id = multiplayer.get_unique_id()
-    connection_success.emit()
+func _server_exists(ip: String) -> bool:
+    for server in available_servers:
+        if server.ip == ip: return true
+    return false
 
-func _on_connection_failed():
-    print("Connection failed")
-    connection_failed.emit()
-    disconnect_from_server()
+func get_available_servers() -> Array:
+    return available_servers
 
-func _on_server_disconnected():
-    print("Server disconnected")
-    disconnect_from_server()
-
-@rpc("any_peer", "call_local", "reliable")
-func sync_player_transform(player_id: int, position: Vector3, rotation: Vector3):
-    if players.has(player_id):
-        players[player_id]["position"] = position
-        players[player_id]["rotation"] = rotation
-
-# Пример использования в игроке:
-# func _physics_process(delta):
-#     if is_multiplayer_authority():
-#         NetworkManager.sync_player_transform.rpc(
-#             multiplayer.get_unique_id(),
-#             global_position,
-#             rotation
-#         )
-
-@rpc("any_peer", "call_local", "reliable")
-func send_chat_message(message: String):
-    var player_name = players.get(multiplayer.get_remote_sender_id(), {}).get("name", "Unknown")
-    GameEvents.emit_system_message("[%s]: %s" % [player_name, message])
-
-@rpc("any_peer", "reliable")
-func admin_command(command: String, parameters = null):
-    if multiplayer.is_server() and players[multiplayer.get_remote_sender_id()].get("dev", false):
-        _execute_admin_command(command, parameters)
-
-func _execute_admin_command(command: String, parameters):
-    match command:
-        "kick":
-            if typeof(parameters) == TYPE_INT:
-                disconnect_peer(parameters)
-        "restart":
-            get_tree().reload_current_scene()
-        _:
-            push_error("Unknown admin command: ", command)
-
-func is_server() -> bool:
-    return peer != null and peer.get_connection_status() == MultiplayerPeer.CONNECTION_CONNECTED and multiplayer.is_server()
-
-func get_player_name(player_id: int) -> String:
-    return players.get(player_id, {}).get("name", "Unknown Player")
-
-func get_player_vip_status(player_id: int) -> bool:
-    return players.get(player_id, {}).get("vip", false)
-
-func get_player_dev_status(player_id: int) -> bool:
-    return players.get(player_id, {}).get("dev", false)
+func disconnect_peer():
+    if multiplayer.multiplayer_peer:
+        multiplayer.multiplayer_peer.close()
+    players.clear()
