@@ -1,49 +1,52 @@
-extends CanvasLayer
+extends PanelContainer
 
-@onready var teams_container = $Panel/VBoxContainer/TeamsContainer
-@onready var message_label = $Panel/VBoxContainer/WelcomeMessage
-@onready var hint_label = $Panel/VBoxContainer/Hint
-@onready var timer = $Panel/VBoxContainer/Timer
+signal team_selected(team: String)
 
-var selected_team := ""
+@onready var teams_container = $ScrollContainer/VBoxContainer
 
-func setup(teams: Dictionary, welcome_data: Dictionary):
-    message_label.text = welcome_data.message
-    hint_label.text = welcome_data.hint
-    timer.wait_time = welcome_data.duration
-    
-    # Создаем кнопки для каждой команды
-    for team_name in teams:
-        var btn = Button.new()
-        btn.text = team_name
-        btn.custom_minimum_size = Vector2(200, 50)
-        btn.add_theme_color_override("font_color", teams[team_name].color)
-        btn.pressed.connect(_on_team_selected.bind(team_name))
-        teams_container.add_child(btn)
-    
-    timer.start()
-    _animate_appear()
+var team_colors = {}
 
-func _animate_appear():
-    var tween = create_tween()
-    tween.tween_property($Panel, "position", Vector2(0, 0), 0.5)\
-         .from(Vector2(0, -200)).set_ease(Tween.EASE_OUT)
+func setup(teams_data: Dictionary):
+    team_colors = teams_data
+    _clear_teams()
+    _create_team_blocks()
+
+func _clear_teams():
+    for child in teams_container.get_children():
+        child.queue_free()
+
+func _create_team_blocks():
+    for team in team_colors:
+        var panel = PanelContainer.new()
+        var vbox = VBoxContainer.new()
+        var header = HBoxContainer.new()
+        
+        # Настройка стилей
+        var style = StyleBoxFlat.new()
+        style.bg_color = team_colors[team].color
+        panel.add_theme_stylebox_override("panel", style)
+        
+        # Заголовок команды
+        var title = Label.new()
+        title.text = team.capitalize()
+        title.add_theme_font_size_override("font_size", 20)
+        header.add_child(title)
+        
+        # Кнопка выбора
+        var select_btn = Button.new()
+        select_btn.text = "Выбрать"
+        select_btn.pressed.connect(_on_team_selected.bind(team))
+        header.add_child(select_btn)
+        
+        # Список игроков
+        var players_label = Label.new()
+        players_label.text = "Игроки:\n" + "\n".join(team_colors[team].players)
+        
+        vbox.add_child(header)
+        vbox.add_child(players_label)
+        panel.add_child(vbox)
+        teams_container.add_child(panel)
 
 func _on_team_selected(team: String):
-    selected_team = team
-    GameEvents.emit_signal("team_selected", team)
-    _animate_disappear()
-
-func _on_spectate_pressed():
-    selected_team = "Spectators"
-    GameEvents.emit_signal("team_selected", "Spectators")
-    _animate_disappear()
-
-func _on_timer_timeout():
-    if selected_team.is_empty():
-        _on_spectate_pressed()
-
-func _animate_disappear():
-    var tween = create_tween()
-    tween.tween_property($Panel, "modulate:a", 0.0, 0.3)
-    tween.tween_callback(queue_free)
+    team_selected.emit(team)
+    queue_free()
