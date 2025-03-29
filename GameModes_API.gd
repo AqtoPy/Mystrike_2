@@ -1,76 +1,134 @@
 class_name BaseGameMode
 extends RefCounted
 
+## Базовый класс для создания кастомных режимов
+
 # Сигналы
-signal mode_initialized
-signal player_respawned(player: Node)
+signal mode_preload_started
+signal mode_loaded_successfully
+signal game_started
 signal game_ended(winner: String)
-signal show_popup(title: String, message: String, duration: float)
+signal player_joined(player: Node)
+signal player_left(player: Node)
+signal player_spawned(player: Node, team: String)
+signal player_died(player: Node, killer: Node)
+signal team_score_changed(team: String, new_score: int)
 
-# Конфигурация
-var config: Dictionary = {}
+# Основные свойства режима (должны быть переопределены)
+var mode_name := "Unnamed Mode"
+var author := "Unknown"
+var version := "1.0"
+var description := "No description provided"
+var icon: Texture2D = null
+
+# Системные свойства
 var world: Node
-var players: Array[Node] = []
+var players := {}
+var teams := {}
+var config := {}
+var is_game_active := false
 
-# Вспомогательные ссылки
-var popup_scene = preload("res://ui/popup_message.tscn")
+# API для моддеров ======================================================
 
-# Виртуальные методы ======================================
+## Должен быть переопределен - настройка команд и правил
+func setup_mode() -> void:
+    push_warning("setup_mode() not overridden")
 
-func initialize_mode() -> void:
-    """Вызывается при загрузке режима"""
-    push_warning("initialize_mode() not implemented")
-
+## Должен быть переопределен - логика начала матча
 func start_game() -> void:
-    """Старт игрового режима"""
-    push_warning("start_game() not implemented")
+    push_warning("start_game() not overridden")
 
+## Должен быть переопределен - логика завершения матча
 func end_game(winner: String = "") -> void:
-    """Завершение режима"""
-    game_ended.emit(winner)
+    push_warning("end_game() not overridden")
 
-func _on_player_join(player: Node) -> void:
-    """Обработка подключения игрока"""
-    push_warning("_on_player_join() not implemented")
+## Регистрация команд (автоматически вызывает setup_spawn_points)
+func register_team(team_name: String, team_data: Dictionary) -> void:
+    teams[team_name] = {
+        "color": team_data.get("color", Color.WHITE),
+        "score": 0,
+        "spawn_points": [],
+        "max_players": team_data.get("max_players", 0),
+        "players": []
+    }
+    _setup_spawn_points(team_name)
 
-func _on_player_death(player: Node, killer: Node) -> void:
-    """Обработка смерти игрока"""
-    push_warning("_on_player_death() not implemented")
+## Добавить условие победы
+func add_win_condition(condition_name: String, condition: Callable) -> void:
+    if not world.has_method("add_win_condition"):
+        push_error("World doesn't support win conditions")
+        return
+    world.add_win_condition(condition_name, condition)
 
-# Основной API ============================================
+## Спавн кастомного объекта
+func spawn_object(object_scene: PackedScene, position: Vector3, parent: Node = world) -> Node:
+    var obj = object_scene.instantiate()
+    obj.position = position
+    parent.add_child(obj)
+    return obj
 
-func show_popup_message(title: String, message: String, duration: float = 3.0) -> void:
-    """Показать всплывающее сообщение всем игрокам"""
-    show_popup.emit(title, message, duration)
+## Показать сообщение всем игрокам
+func broadcast_message(message: String, color: Color = Color.WHITE) -> void:
+    if multiplayer.is_server():
+        rpc("_receive_broadcast_message", message, color)
+
+# Внутренние методы =====================================================
+
+func _initialize(world_node: Node, mode_config: Dictionary) -> void:
+    world = world_node
+    config = mode_config
+    setup_mode()
+    mode_loaded_successfully.emit()
+
+func _on_player_connected(player: Node) -> void:
+    players[player.name] = player
+    player_joined.emit(player)
+    _show_team_selection(player)
+
+func _on_player_disconnected(player_id: int) -> void:
+    var player = players.get(str(player_id))
+    if player:
+        player_left.emit(player)
+        players.erase(str(player_id))
+
+func _show_team_selection(player: Node) -> void:
+    var popup = preload("res://ui/TeamSelectionPopup.tscn").instantiate()
+    popup.setup(teams)
     
-    # Локальный вызов для хоста
-    if Engine.is_editor_hint() or not multiplayer.is_server():
-        _create_local_popup(title, message, duration)
+    popup.team_selected.connect(func(team: String):
+        _assign_player_to_team(player, team)
+    )
+    
+    player.get_node("UI").add_child(popup)
 
-func get_players() -> Array[Node]:
-    """Получить всех игроков"""
-    return get_tree().get_nodes_in_group("players") if get_tree() else []
+func _assign_player_to_team(player: Node, team: String) -> void:
+    if not teams.has(team):
+        push_error("Invalid team: ", team)
+        return
+    
+    # Удаляем из предыдущей команды
+    var old_team = player.get("team", "")
+    if teams.has(old_team):
+        teams[old_team].players.erase(player)
+    
+    # Добавляем в новую команду
+    player.set("team", team)
+    teams[team].players.append(player)
+    player_spawned.emit(player, team)
+    
+    # Обновляем визуал игрока
+    _apply_team_visuals(player, team)
 
-func spawn_player(player: Node, spawn_point: Vector3) -> void:
-    """Спавн игрока в указанной позиции"""
-    if world and world.has_method("spawn_player"):
-        world.call("spawn_player", player, spawn_point)
-    else:
-        push_error("World not set or missing spawn method")
+func _apply_team_visuals(player: Node, team: String) -> void:
+    if player.has_method("set_team_color"):
+        player.set_team_color(teams[team].color)
 
-func respawn_player(player: Node, delay: float = 5.0) -> void:
-    """Возрождение игрока с задержкой"""
-    await get_tree().create_timer(delay).timeout
-    player_respawned.emit(player)
+func _setup_spawn_points(team_name: String) -> void:
+    var spawn_group = team_name.to_lower() + "_spawns"
+    teams[team_name].spawn_points = world.get_tree().get_nodes_in_group(spawn_group)
 
-# Внутренние методы =======================================
+# Сетевые методы =======================================================
 
-func _create_local_popup(title: String, message: String, duration: float) -> void:
-    """Создать PopUp локально (для синглплеера/редактора)"""
-    var popup = popup_scene.instantiate()
-    popup.setup(title, message, duration)
-    get_tree().root.add_child(popup)
-
-func _broadcast_message(text: String, color: Color) -> void:
-    """Альтернатива для broadcast_message"""
-    show_popup_message("Система", text, 3.0)
+@rpc("call_local", "reliable")
+func _receive_broadcast_message(message: String, color: Color) -> void:
+    GameEvents.emit_signal("show_system_message", message, color)
